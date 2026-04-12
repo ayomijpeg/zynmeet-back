@@ -182,7 +182,9 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log('❌ Device Disconnected'));
 });
 
-app.get('/health', (req, res) => res.send('OK'));
+app.get('/health', (req: Request, res: Response) => {
+  res.json({ status: "Active" });
+});
 
 const PORT = process.env.PORT || 4000;
 httpServer.listen(PORT, () => {

@@ -9,29 +9,20 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "db:generate": "prisma generate"
   },
-  "dependencies": {
-    "@prisma/client": "^6.19.3",
-    "@prisma/config": "^7.7.0",
-    "bcrypt": "^5.1.1",
-    "bullmq": "^4.12.0",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.6",
-    "dotenv": "^16.6.1",
-    "express": "^4.22.1",
-    "google-auth-library": "^9.0.0",
-    "ioredis": "^5.10.1",
-    "jsonwebtoken": "^9.0.3",
-    "socket.io": "^4.7.2"
-  },
-  "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
-    "@types/cookie-parser": "^1.4.10",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^4.17.25",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/node": "^20.19.39",
-    "prisma": "^6.19.3",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.3"
-  }
+ "dependencies": {
+  "@prisma/client": "^6.19.3",
+  "express": "^4.18.2",
+  "@types/express": "^4.17.21",
+  "@types/jsonwebtoken": "^9.0.6",
+  "@types/cookie-parser": "^1.4.7",
+  "@types/node": "^20.12.7",
+  "jsonwebtoken": "^9.0.2",
+  "cookie-parser": "^1.4.7",
+  "bcrypt": "^5.1.1",
+  "cors": "^2.8.5",
+  "dotenv": "^16.3.1",
+  "ioredis": "^5.3.2",
+  "socket.io": "^4.7.2",
+  "google-auth-library": "^9.0.0"
+}
 }
