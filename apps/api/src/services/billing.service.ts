@@ -1,4 +1,4 @@
-import { Queue, Worker } from 'bullmq';
+import { Queue, Worker ,Job} from 'bullmq';
 import IORedis from 'ioredis';
 import { db } from '../lib/db';
 import { io } from '../index'; 
@@ -36,7 +36,7 @@ export const startBillingBlock = async (userId: string, roomId: string) => {
 };
 
 // THE WORKER: Executes the N100 deduction
-export const billingWorker = new Worker('billing-engine', async (job) => {
+export const billingWorker = new Worker('billing-engine', async (job: Job) => { 
     const { userId, roomId } = job.data;
     
     // Fetch user and check against the production field 'walletRecord'
