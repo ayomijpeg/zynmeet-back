@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- CORE TABLES ---
+
+model User {
+  id            String   @id @default(uuid())
+  email         String   @unique
+  passwordHash  String?
+  name          String
+  provider      String   @default("credentials")
+  walletBalance Int      @default(0) // Cache for quick lookup
+  createdAt     DateTime @default(now())
+
+  // --- Relations (Added to fix opposite relation errors) ---
+  hostedRooms    Room[]          @relation("HostedRooms")
+  sessions       Session[]
+  walletRecord   WalletBalance?
+  ledgerEntries  WalletLedger[]
+}
+
+model GuestSession {
+  id          String   @id @default(uuid())
+  displayName String
+  roomId      String
+  socketId    String   @unique
+  joinedAt    DateTime @default(now())
+}
+
+model Room {
+  id        String    @id @default(uuid())
+  slug      String    @unique
+  hostId    String
+  locked    Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  // --- Relations ---
+  host      User      @relation("HostedRooms", fields: [hostId], references: [id])
+  sessions  Session[]
+}
+
+model Session {
+  id            String         @id @default(uuid())
+  userId        String
+  roomId        String
+  startedAt     DateTime       @default(now())
+  endedAt       DateTime?
+  durationMins  Int?
+  endReason     String?        // 'user_left' | 'billing' | 'host_removed' | 'room_closed'
+  
+  // --- Relations ---
+  user          User           @relation(fields: [userId], references: [id])
+  room          Room           @relation(fields: [roomId], references: [id])
+  billingEvents BillingEvent[]
+}
+
+// --- BILLING TABLES (STRICT APPEND-ONLY) ---
+
+model WalletBalance {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  balance   Int      @default(0) // in kobo (₦100 = 10000 kobo)
+  updatedAt DateTime @updatedAt
+
+  // --- Relations ---
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model WalletLedger {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // 'CREDIT' | 'DEBIT'
+  amount    Int      // kobo
+  gateway   String?  // 'paystack' | 'flutterwave' | 'opay'
+  eventId   String?  @unique 
+  sessionId String?
+  createdAt DateTime @default(now())
+
+  // --- Relations ---
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model BillingEvent {
+  id        String   @id @default(uuid())
+  sessionId String
+  type      String   // 'DEDUCTION' | 'TOP_UP' | 'GRACE_START' | 'DISCONNECT'
+  amount    Int?     // kobo
+  balance   Int      // wallet balance at time of event
+  createdAt DateTime @default(now())
+
+  // --- Relations ---
+  session   Session  @relation(fields: [sessionId], references: [id])
+}

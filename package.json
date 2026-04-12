@@ -1,0 +1,23 @@
+{
+  "name": "zynmeet",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/sfu",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npx concurrently \"npm run dev -w apps/api\" \"npm run dev -w apps/sfu\"",
+    "db:generate": "npm run db:generate -w apps/api"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.5.2",
+    "concurrently": "^8.2.0",
+    "tsx": "^4.21.0"
+  },
+  "dependencies": {
+    "mediasoup": "^3.19.19"
+  }
+}
