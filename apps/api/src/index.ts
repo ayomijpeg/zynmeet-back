@@ -8,7 +8,7 @@ import jwt from 'jsonwebtoken';
 import cookieParser from 'cookie-parser';
 import { OAuth2Client } from 'google-auth-library';
 
-// $500k Logic: Internal Service Imports
+// Core Service Imports
 import { db } from './lib/db'; 
 import { startBillingBlock } from './services/billing.service';
 
@@ -20,57 +20,66 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 const JWT_SECRET = process.env.JWT_SECRET || 'zyn_ultra_secure_500k_pulse';
 const isProd = process.env.NODE_ENV === 'production';
 
-// --- PRODUCTION CORS ---
+// --- FIXED DYNAMIC CORS HANDLER ---
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://zynmeet-front.vercel.app"
+];
+
 app.use(cors({
-  origin: isProd ? "https://zynmeet-front.vercel.app" : "http://localhost:3000",
-  credentials: true
+  origin: (origin, callback) => {
+    // Allow server-to-server or local dev without origin
+    if (!origin || !isProd) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS blocked by ZynMeet Security Policy'));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "OPTIONS"]
 }));
 
 app.use(cookieParser() as any); 
 
-// --- 1. PAYSTACK WEBHOOK (Must stay above express.json) ---
+// --- INITIALIZE SOCKET.IO (SINGLE INSTANCE) ---
+export const io = new Server(httpServer, {
+  cors: { 
+    origin: allowedOrigins,
+    credentials: true 
+  } 
+});
+
+// --- 1. WEBHOOKS (RAW Body required) ---
 app.post('/api/v1/webhooks/paystack', 
   express.raw({ type: 'application/json' }), 
   async (req: Request, res: Response): Promise<void> => {
     const signature = req.headers['x-paystack-signature'] as string;
     const secret = process.env.PAYSTACK_WEBHOOK_SECRET || 'sk_test_placeholder';
-
     const hash = crypto.createHmac('sha512', secret).update(req.body).digest('hex');
 
     if (hash !== signature) {
-      console.error("⚠️ HMAC Signature Mismatch");
       res.status(401).send('Unauthorized');
       return;
     }
 
     const payload = JSON.parse(req.body.toString());
-    
     if (payload.event === 'charge.success') {
       const { amount, metadata, reference } = payload.data;
-      const userId = metadata.user_id;
-
       try {
         await db.$transaction([
-          // Fix Error TS2353: Mapping ledger correctly to latest schema
           db.walletLedger.create({
-            data: { 
-                userId, 
-                amount, 
-                type: 'CREDIT', 
-                gateway: 'paystack', 
-                eventId: reference 
-            }
+            data: { userId: metadata.user_id, amount, type: 'CREDIT', gateway: 'paystack', eventId: reference }
           }),
           db.walletBalance.upsert({
-            where: { userId },
+            where: { userId: metadata.user_id },
             update: { balance: { increment: amount } },
-            create: { userId, balance: amount }
+            create: { userId: metadata.user_id, balance: amount }
           })
         ]);
-        io.to(`user:${userId}`).emit('billing:funded', { amount });
-      } catch (e) {
-        console.error("Financial Sync Failed:", e);
-      }
+        io.to(`user:${metadata.user_id}`).emit('billing:funded', { amount });
+      } catch (e) { console.error("Ledger Failure", e); }
     }
     res.sendStatus(200);
 });
@@ -78,17 +87,13 @@ app.post('/api/v1/webhooks/paystack',
 app.use(express.json());
 
 // --- 2. AUTHENTICATION ---
-
 app.post('/api/v1/auth/google', async (req: Request, res: Response) => {
   const { token } = req.body;
-  if (!token) return res.status(400).json({ success: false });
-
   try {
     const ticket = await googleClient.verifyIdToken({
       idToken: token,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
-
     const payload = ticket.getPayload();
     if (!payload?.email) return res.status(401).json({ success: false });
 
@@ -97,24 +102,23 @@ app.post('/api/v1/auth/google', async (req: Request, res: Response) => {
       update: { name: payload.name || "Member" },
       create: { 
         email: payload.email, 
-        name: payload.name || "ZynDrx Member", 
+        name: payload.name || "Member", 
         provider: "google"
       }
     });
 
     const jwtToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
     
+    // Set cookie for Production (SameSite: None required for Vercel -> Render)
     res.cookie('zyn_auth', jwtToken, { 
       httpOnly: true, 
-      secure: isProd,
-      sameSite: isProd ? 'none' : 'lax',
+      secure: true, 
+      sameSite: 'none', 
       maxAge: 7 * 24 * 60 * 60 * 1000 
     });
 
     res.json({ success: true, user });
-  } catch (error) {
-    res.status(401).json({ success: false });
-  }
+  } catch (error) { res.status(401).json({ success: false }); }
 });
 
 app.get('/api/v1/auth/me', async (req: Request, res: Response) => {
@@ -124,33 +128,20 @@ app.get('/api/v1/auth/me', async (req: Request, res: Response) => {
         const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
         const user = await db.user.findUnique({
             where: { id: decoded.userId },
-            select: { id: true, name: true, email: true, walletBalance: true }
+            include: { walletRecord: true }
         });
         res.json({ user });
-    } catch {
-        res.json({ user: null });
-    }
+    } catch { res.json({ user: null }); }
 });
 
-// --- 3. VIDEO SIGNALING HUB ---
-
-export const io = new Server(httpServer, {
-  cors: { 
-    origin: isProd ? "https://zynmeet-front.vercel.app" : "http://localhost:3000",
-    credentials: true 
-  } 
-});
-
+// --- 3. SIGNALING HUB ---
 io.on('connection', (socket) => {
-  console.log('📡 Connected Node:', socket.id);
-
-  socket.on('request-join', async (data: { roomId: string, userId?: string, guestName?: string }) => {
-    const { roomId, userId, guestName } = data;
+  socket.on('request-join', async (data: { roomId: string, userId?: string, displayName?: string }) => {
+    const { roomId, userId, displayName } = data;
     
     try {
-      let finalName = guestName || "Guest Attendee";
-      // Fix Error TS2304: Scoped correctly for billing initialization
-      let hostToCharge = userId || "SYSTEM_ORPHAN";
+      let finalName = displayName || "Guest";
+      let actualUserId = userId || "GUEST_" + socket.id;
 
       if (userId) {
          const user = await db.user.findUnique({ where: { id: userId } });
@@ -158,35 +149,45 @@ io.on('connection', (socket) => {
       }
 
       socket.join(roomId);
-      socket.join(`user:${userId || socket.id}`);
+      socket.join(`user:${actualUserId}`);
+      
+      socket.data.roomId = roomId;
+      socket.data.userName = finalName;
+      socket.data.userId = actualUserId;
 
       const room = await db.room.upsert({
         where: { slug: roomId },
         update: {},
-        create: { slug: roomId, hostId: hostToCharge }
+        create: { slug: roomId, hostId: userId || "SYSTEM" }
       });
 
-      // TRIGGER 30-MIN ACCOUNTING
       await startBillingBlock(room.hostId, roomId);
 
-      console.log(`✔️ [${roomId}] JOIN SUCCESS: ${finalName}`);
-      socket.emit('joined-successfully', { displayName: finalName, roomId });
-      socket.to(roomId).emit('participant-joined', { name: finalName, id: socket.id });
+      // Notify users
+      const participants = await io.in(roomId).fetchSockets();
+      const peerList = participants
+        .filter(s => s.id !== socket.id)
+        .map(s => ({ id: s.id, name: s.data.userName }));
+      
+      socket.emit('room:participant_list', peerList);
+      socket.to(roomId).emit('participant:joined', { id: socket.id, name: finalName });
 
-    } catch (error) {
-      console.error('Socket Signaling Error:', error);
-      socket.emit('join-error', { msg: 'Platform Syncing...' });
+      socket.emit('joined-successfully', { displayName: finalName, roomId });
+    } catch (e) {
+      socket.emit('join-error', { msg: 'Platform sync error' });
     }
   });
 
-  socket.on('disconnect', () => console.log('❌ Device Disconnected'));
+  socket.on('disconnect', () => {
+     if (socket.data.roomId) {
+        socket.to(socket.data.roomId).emit('participant:left', socket.id);
+     }
+  });
 });
 
-app.get('/health', (req: Request, res: Response) => {
-  res.json({ status: "Active" });
-});
+app.get('/health', (req: Request, res: Response) => res.json({ status: "Active" }));
 
 const PORT = process.env.PORT || 4000;
 httpServer.listen(PORT, () => {
-  console.log(`\n✅ ZYNDRX PRODUCTION STACK ACTIVE ON: ${PORT}\n`);
+  console.log(`\n✅ PRODUCTION INFRASTRUCTURE FULLY SYNCED ON: ${PORT}\n`);
 });
