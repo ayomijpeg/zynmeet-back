@@ -28,9 +28,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow server-to-server or local dev without origin
     if (!origin || !isProd) return callback(null, true);
-    
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
@@ -43,7 +41,7 @@ app.use(cors({
 
 app.use(cookieParser() as any); 
 
-// --- INITIALIZE SOCKET.IO (SINGLE INSTANCE) ---
+// --- INITIALIZE SOCKET.IO ---
 export const io = new Server(httpServer, {
   cors: { 
     origin: allowedOrigins,
@@ -51,7 +49,7 @@ export const io = new Server(httpServer, {
   } 
 });
 
-// --- 1. WEBHOOKS (RAW Body required) ---
+// --- 1. WEBHOOKS ---
 app.post('/api/v1/webhooks/paystack', 
   express.raw({ type: 'application/json' }), 
   async (req: Request, res: Response): Promise<void> => {
@@ -109,7 +107,6 @@ app.post('/api/v1/auth/google', async (req: Request, res: Response) => {
 
     const jwtToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
     
-    // Set cookie for Production (SameSite: None required for Vercel -> Render)
     res.cookie('zyn_auth', jwtToken, { 
       httpOnly: true, 
       secure: true, 
@@ -136,8 +133,13 @@ app.get('/api/v1/auth/me', async (req: Request, res: Response) => {
 
 // --- 3. SIGNALING HUB ---
 io.on('connection', (socket) => {
-  socket.on('request-join', async (data: { roomId: string, userId?: string, displayName?: string }) => {
-    const { roomId, userId, displayName } = data;
+  socket.on('request-join', async (data: { 
+    roomId: string; 
+    userId?: string; 
+    displayName?: string;
+    sfuSocketId?: string; // FIX: SFU socket ID so participant names map to video streams
+  }) => {
+    const { roomId, userId, displayName, sfuSocketId } = data;
     
     try {
       let finalName = displayName || "Guest";
@@ -151,9 +153,10 @@ io.on('connection', (socket) => {
       socket.join(roomId);
       socket.join(`user:${actualUserId}`);
       
-      socket.data.roomId = roomId;
-      socket.data.userName = finalName;
-      socket.data.userId = actualUserId;
+      socket.data.roomId      = roomId;
+      socket.data.userName    = finalName;
+      socket.data.userId      = actualUserId;
+      socket.data.sfuSocketId = sfuSocketId || null; // FIX: store it
 
       const room = await db.room.upsert({
         where: { slug: roomId },
@@ -163,14 +166,25 @@ io.on('connection', (socket) => {
 
       await startBillingBlock(room.hostId, roomId);
 
-      // Notify users
+      // FIX: Include sfuSocketId in participant lists so frontend can match
+      // SFU stream socketIds (used as Map keys in remoteStreams) to names.
       const participants = await io.in(roomId).fetchSockets();
       const peerList = participants
         .filter(s => s.id !== socket.id)
-        .map(s => ({ id: s.id, name: s.data.userName }));
+        .map(s => ({ 
+          id: s.id, 
+          name: s.data.userName,
+          sfuSocketId: s.data.sfuSocketId || null,
+        }));
       
       socket.emit('room:participant_list', peerList);
-      socket.to(roomId).emit('participant:joined', { id: socket.id, name: finalName });
+
+      // FIX: Include sfuSocketId when notifying existing peers about new joiner
+      socket.to(roomId).emit('participant:joined', { 
+        id: socket.id, 
+        name: finalName,
+        sfuSocketId: sfuSocketId || null,
+      });
 
       socket.emit('joined-successfully', { displayName: finalName, roomId });
     } catch (e) {
